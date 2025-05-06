@@ -39,29 +39,33 @@ def get_exif_taken_date(filepath):
         pass
     return None
 
-# JSON 메타데이터에서 날짜 추출 (photoTakenTime -> creationTime -> MediaCreateDate -> TrackCreateDate)
-def get_json_taken_date(filepath):
-    pattern = str(filepath) + ".supple.json"
+# JSON 메타데이터에서 날짜 및 위치 추출
+def get_json_taken_date_and_location(filepath):
+    pattern = str(filepath) + ".*.json"
     matches = glob.glob(pattern)
     for json_file in matches:
         try:
             with open(json_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if "photoTakenTime" in data:
-                    timestamp = int(data["photoTakenTime"]["timestamp"])
-                    return datetime.utcfromtimestamp(timestamp)
-                elif "creationTime" in data:
-                    timestamp = int(data["creationTime"]["timestamp"])
-                    return datetime.utcfromtimestamp(timestamp)
-                elif "mediaCreateTime" in data:
-                    timestamp = int(data["mediaCreateTime"]["timestamp"])
-                    return datetime.utcfromtimestamp(timestamp)
-                elif "trackCreateTime" in data:
-                    timestamp = int(data["trackCreateTime"]["timestamp"])
-                    return datetime.utcfromtimestamp(timestamp)
+                date_obj = None
+                for key in ["photoTakenTime", "creationTime", "mediaCreateTime", "trackCreateTime"]:
+                    if key in data:
+                        timestamp = int(data[key]["timestamp"])
+                        date_obj = datetime.utcfromtimestamp(timestamp)
+                        break
+                location = None
+                for geo_key in ["geoData", "geoDataExif"]:
+                    if geo_key in data:
+                        geo = data[geo_key]
+                        lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
+                        if lat != 0.0 or lon != 0.0:
+                            location = (lat, lon)
+                            break
+                if date_obj:
+                    return date_obj, location
         except:
             continue
-    return None
+    return None, None
 
 # 파일 이름에서 날짜 추출
 def parse_date_from_filename(name):
@@ -79,81 +83,86 @@ def parse_date_from_filename(name):
                 continue
     return None
 
-# EXIF 날짜 업데이트
-def update_exiftool_taken_date(filepath, date_obj):
+# EXIF 날짜 및 위치 업데이트
+def update_exiftool_taken_date(filepath, date_obj, location=None):
     date_str = date_obj.strftime("%Y:%m:%d %H:%M:%S")
     suffix = filepath.suffix.lower()
-
     if suffix in {".webp"}:
         print(f"[⚠️ EXIF 미지원 포맷] {filepath} - 건너뜀")
         return
 
+    lat, lon = None, None
+    cmd = []
+    if suffix in {".mp4", ".mov", ".3gp"}:
+        cmd = [
+            "exiftool",
+            f"-AllDates={date_str}",
+            f"-MediaCreateDate={date_str}",
+            f"-TrackCreateDate={date_str}"
+        ]
+    else:
+        cmd = ["exiftool", f"-AllDates={date_str}"]
+
+    if location:
+        lat, lon = location
+        cmd.append(f"-GPSLatitude={lat}")
+        cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
+        cmd.append(f"-GPSLongitude={lon}")
+        cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
+
+    cmd += ["-overwrite_original", str(filepath)]
+
     try:
-        if suffix in {".mp4", ".mov", ".3gp"}:
-            cmd = [
-                "exiftool",
-                f"-AllDates={date_str}",
-                f"-MediaCreateDate={date_str}",
-                f"-TrackCreateDate={date_str}",
-                "-overwrite_original",
-                str(filepath)
-            ]
-        else:
-            cmd = [
-                "exiftool",
-                f"-AllDates={date_str}",
-                "-overwrite_original",
-                str(filepath)
-            ]
-
         subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError:
 
-    except subprocess.CalledProcessError as e:
+        # Exift정보 꼬여서 업데이트 안될 때 파일을 다시 쓰고 업데이트 시도도
         try:
-            if suffix == ".png":
-                try:
-                    img = Image.open(filepath)
-                    img.save(filepath)
-                    cmd = [
-                        "exiftool",
-                        f"-AllDates={date_str}",
-                        "-overwrite_original",
-                        str(filepath)
-                    ]
-                    subprocess.run(cmd, check=True, capture_output=True, text=True)
-                    print(f"[⚠️ PNG 재저장 후 AllDates 성공] {filepath}")
-                    return
-                except Exception as png_err:
-                    print(f"[❌ PNG 재저장 실패] {filepath} → {png_err}")
-                    raise png_err
+            img = Image.open(filepath)
+            img.save(filepath)
+            png_cmd = ["exiftool", f"-AllDates={date_str}"]
+            if location:
+                png_cmd.append(f"-GPSLatitude={lat}")
+                png_cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
+                png_cmd.append(f"-GPSLongitude={lon}")
+                png_cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
+            png_cmd += ["-overwrite_original", str(filepath)]
+            subprocess.run(png_cmd, check=True, capture_output=True, text=True)
+            print(f"[⚠️ 파일 재저장 후 AllDates + 위치 성공] {filepath}")
+            return
+        except Exception as png_err:
+            print(f"[❌ 파일 재저장 후 업데이트 실패] {filepath} → {png_err}")
 
-            fallback_cmd = [
-                "exiftool",
-                f"-DateTimeOriginal={date_str}",
-                "-overwrite_original",
-                str(filepath)
-            ]
+        # fallback with DateTimeOriginal
+        fallback_cmd = ["exiftool", f"-DateTimeOriginal={date_str}"]
+        if location:
+            fallback_cmd.append(f"-GPSLatitude={lat}")
+            fallback_cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
+            fallback_cmd.append(f"-GPSLongitude={lon}")
+            fallback_cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
+        fallback_cmd += ["-overwrite_original", str(filepath)]
+        try:
             subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
-            print(f"[⚠️ Fallback 성공] {filepath} - DateTimeOriginal만 설정")
+            print(f"[⚠️ Fallback 성공] {filepath} - DateTimeOriginal 및 위치 설정")
         except subprocess.CalledProcessError as e2:
             print(f"[❌ ExifTool 최종 실패] {filepath}\n→ {e2.stderr.strip()}")
-            raise e2
 
 # 파일 처리 함수
 def process_file_worker(file, queue, success_list, fail_list):
     try:
         process_file((file, success_list, fail_list))
     finally:
-        queue.put(1)  # 작업 완료 알림
+        queue.put(1)
 
 def process_file(args):
     file, success_list, fail_list = args
     try:
         date_taken = get_exif_taken_date(file)
+        location = None
         method = "EXIF"
 
         if not date_taken:
-            date_taken = get_json_taken_date(file)
+            date_taken, location = get_json_taken_date_and_location(file)
             method = "JSON"
 
         if not date_taken:
@@ -166,14 +175,13 @@ def process_file(args):
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_path = dest_dir / file.name
             shutil.move(file, dest_path)
-            update_exiftool_taken_date(dest_path, date_taken)
+            update_exiftool_taken_date(dest_path, date_taken, location)
             log(file, success_list)
         else:
             dest_dir = UNDEFINED_DIR
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(file, dest_dir / file.name)
             log(file, fail_list)
-
     except:
         log(file, fail_list)
 
