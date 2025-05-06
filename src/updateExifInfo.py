@@ -11,7 +11,6 @@ import subprocess
 from datetime import datetime
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count, Manager
-import time
 import glob
 
 # 설정
@@ -35,7 +34,7 @@ def get_exif_taken_date(filepath):
         exif_data = img._getexif()
         if exif_data and 36867 in exif_data:
             return datetime.strptime(exif_data[36867], "%Y:%m:%d %H:%M:%S")
-    except:
+    except Exception:
         pass
     return None
 
@@ -63,7 +62,7 @@ def get_json_taken_date_and_location(filepath):
                             break
                 if date_obj:
                     return date_obj, location
-        except:
+        except Exception:
             continue
     return None, None
 
@@ -79,11 +78,17 @@ def parse_date_from_filename(name):
             try:
                 y, m, d = match.groups()
                 return datetime(int(y), int(m.zfill(2)), int(d.zfill(2)))
-            except:
+            except Exception:
                 continue
     return None
 
-# EXIF 날짜 및 위치 업데이트
+# EXIF 위치 정보 추가
+def append_gps_tags(cmd, lat, lon):
+    cmd.append(f"-GPSLatitude={lat}")
+    cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
+    cmd.append(f"-GPSLongitude={lon}")
+    cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
+
 def update_exiftool_taken_date(filepath, date_obj, location=None):
     date_str = date_obj.strftime("%Y:%m:%d %H:%M:%S")
     suffix = filepath.suffix.lower()
@@ -91,61 +96,39 @@ def update_exiftool_taken_date(filepath, date_obj, location=None):
         print(f"[⚠️ EXIF 미지원 포맷] {filepath} - 건너뜀")
         return
 
-    lat, lon = None, None
-    cmd = []
+    lat, lon = location if location else (None, None)
+    cmd = ["exiftool", f"-AllDates={date_str}"]
     if suffix in {".mp4", ".mov", ".3gp"}:
-        cmd = [
-            "exiftool",
-            f"-AllDates={date_str}",
-            f"-MediaCreateDate={date_str}",
-            f"-TrackCreateDate={date_str}"
-        ]
-    else:
-        cmd = ["exiftool", f"-AllDates={date_str}"]
-
+        cmd += [f"-MediaCreateDate={date_str}", f"-TrackCreateDate={date_str}"]
     if location:
-        lat, lon = location
-        cmd.append(f"-GPSLatitude={lat}")
-        cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
-        cmd.append(f"-GPSLongitude={lon}")
-        cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
-
+        append_gps_tags(cmd, lat, lon)
     cmd += ["-overwrite_original", str(filepath)]
 
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return
     except subprocess.CalledProcessError:
+        pass
 
-        # Exift정보 꼬여서 업데이트 안될 때 파일을 다시 쓰고 업데이트 시도도
-        try:
-            img = Image.open(filepath)
-            img.save(filepath)
-            png_cmd = ["exiftool", f"-AllDates={date_str}"]
-            if location:
-                png_cmd.append(f"-GPSLatitude={lat}")
-                png_cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
-                png_cmd.append(f"-GPSLongitude={lon}")
-                png_cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
-            png_cmd += ["-overwrite_original", str(filepath)]
-            subprocess.run(png_cmd, check=True, capture_output=True, text=True)
-            print(f"[⚠️ 파일 재저장 후 AllDates + 위치 성공] {filepath}")
-            return
-        except Exception as png_err:
-            print(f"[❌ 파일 재저장 후 업데이트 실패] {filepath} → {png_err}")
+    # Exift정보 꼬여서 업데이트 안될 때 파일을 다시 쓰고 업데이트 시도
+    try:
+        img = Image.open(filepath)
+        img.save(filepath)
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(f"[⚠️ 재저장 후 AllDates + 위치 성공] {filepath}")
+        return
+    except Exception as e:
+        print(f"[⚠️ 재저장 실패] {filepath} → {e}")
 
-        # fallback with DateTimeOriginal
-        fallback_cmd = ["exiftool", f"-DateTimeOriginal={date_str}"]
-        if location:
-            fallback_cmd.append(f"-GPSLatitude={lat}")
-            fallback_cmd.append(f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}")
-            fallback_cmd.append(f"-GPSLongitude={lon}")
-            fallback_cmd.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
-        fallback_cmd += ["-overwrite_original", str(filepath)]
-        try:
-            subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
-            print(f"[⚠️ Fallback 성공] {filepath} - DateTimeOriginal 및 위치 설정")
-        except subprocess.CalledProcessError as e2:
-            print(f"[❌ ExifTool 최종 실패] {filepath}\n→ {e2.stderr.strip()}")
+    fallback_cmd = ["exiftool", f"-DateTimeOriginal={date_str}"]
+    if location:
+        append_gps_tags(fallback_cmd, lat, lon)
+    fallback_cmd += ["-overwrite_original", str(filepath)]
+    try:
+        subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
+        print(f"[⚠️ Fallback 성공] {filepath} - DateTimeOriginal 및 위치 설정")
+    except subprocess.CalledProcessError as e2:
+        print(f"[❌ ExifTool 최종 실패] {filepath}\n→ {e2.stderr.strip()}")
 
 # 파일 처리 함수
 def process_file_worker(file, queue, success_list, fail_list):
@@ -176,13 +159,14 @@ def process_file(args):
             dest_path = dest_dir / file.name
             shutil.move(file, dest_path)
             update_exiftool_taken_date(dest_path, date_taken, location)
-            log(file, success_list)
+            log(dest_path, success_list)
         else:
             dest_dir = UNDEFINED_DIR
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(file, dest_dir / file.name)
-            log(file, fail_list)
-    except:
+            log(dest_dir / file.name, fail_list)
+    except Exception as e:
+        print(f"[⚠️ 처리 실패] {file} → {e}")
         log(file, fail_list)
 
 # 메인 실행
@@ -205,7 +189,7 @@ def run_parallel_processing():
                     queue.get()
                     completed += 1
                     pbar.update(1)
-                    print(f"   처리 완료: {completed}/{len(all_files)}", end='\r')
+                    print(f"   처리 완료: {completed}/{len(all_files)}", end="\r")
 
         with open(LOG_SUCCESS, "w", encoding="utf-8") as f:
             for path in success_list:
