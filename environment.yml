@@ -1,0 +1,6 @@
+name: googlephoto_synolgyphoto
+dependencies:
+  - python=3.13.3
+  - pip
+  - pip:
+      - -r requirements.txt
