@@ -137,7 +137,8 @@ def get_best_taken_datetime(filepath):
         
     except Exception as e:
         print(f"[⚠️ EXIFTool 시간 추정 실패] {filepath} → {e}")
-        return None, None
+
+    return None, ""
 
 # 파일 이름에서 날짜 추출
 def parse_date_from_filename(name):
@@ -195,7 +196,7 @@ def update_exiftool_taken_date(filepath, date_obj, location=None):
         return
 
     lat, lon = location if location else (None, None)
-    cmd = ["exiftool", f"-AllDates={date_str}"]
+    cmd = ["exiftool", "-ignoreMinorErrors", f"-AllDates={date_str}"]
     if suffix in {".mp4", ".mov", ".3gp"}:
         cmd += [f"-MediaCreateDate={date_str}", f"-TrackCreateDate={date_str}"]
     if location:
@@ -218,7 +219,7 @@ def update_exiftool_taken_date(filepath, date_obj, location=None):
     except Exception as e:
         print(f"[⚠️ 재저장 후 AllDates + 위치 실패] {filepath} → {e}")
 
-    fallback_cmd = ["exiftool", f"-DateTimeOriginal={date_str}"]
+    fallback_cmd = ["exiftool", "-ignoreMinorErrors", f"-DateTimeOriginal={date_str}"]
     if location:
         append_gps_tags(fallback_cmd, lat, lon)
     fallback_cmd += ["-overwrite_original", str(filepath)]
