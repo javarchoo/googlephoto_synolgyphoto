@@ -14,8 +14,8 @@ from multiprocessing import Pool, cpu_count, Manager
 import glob
 
 # 설정
-ROOT_DIR = Path(r"G:\Download\Takeout\work\src")       # 원본 폴더
-DEST_DIR = Path(r"G:\Download\Takeout\work\dest")  # 이동 대상 폴더
+ROOT_DIR = Path(r"G:\Download\Takeout\work3\src")       # 원본 폴더
+DEST_DIR = Path(r"G:\Download\Takeout\work3\dest")  # 이동 대상 폴더
 CHECK_DIR = DEST_DIR / "check"
 UNDEFINED_DIR = DEST_DIR / "undefined"
 LOG_SUCCESS = ROOT_DIR / "success_log.txt"
@@ -66,8 +66,11 @@ def get_json_taken_date_and_location(filepath):
                             break
                 if date_obj:
                     return date_obj, location
-        except Exception:
+        except Exception as e:
+            print(f"[⚠️ JSON에서 시간, 위치 추출 중 에러 발생] {filepath} → {e}")
             continue
+
+    print(f"[⚠️ JSON에서 시간 추정 실패] {filepath}")
     return None, None
 
 # sub function: datetime 변환
@@ -136,12 +139,14 @@ def get_best_taken_datetime(filepath):
             return gps_dt, "GPSDateStamp+GPSTimeStamp"
         
     except Exception as e:
-        print(f"[⚠️ EXIFTool 시간 추정 실패] {filepath} → {e}")
+        print(f"[⚠️ EXIFTool 시간, 위치 취득 중 에러 발생] {filepath} → {e}")
 
+    print(f"[⚠️ EXIFTool 시간 추정 실패] {filepath}")
     return None, ""
 
 # 파일 이름에서 날짜 추출
-def parse_date_from_filename(name):
+def parse_date_from_filename(filepath):
+    name = filepath.name
     def is_valid_date(dt):
         return datetime(2005, 1, 1) <= dt <= datetime(2025, 12, 31)
 
@@ -161,24 +166,8 @@ def parse_date_from_filename(name):
             except:
                 continue
 
-    # 2차: 2자리 연도 → 20xx로 간주
-    patterns_2digit = [
-        r"(\d{2})[.\-_]?(\d{2})[.\-_]?(\d{2})",
-        r"(\d{2})[.\-_]?(\d{1,2})[.\-_]?(\d{1,2})"
-    ]
-    for pattern in patterns_2digit:
-        match = re.search(pattern, name)
-        if match:
-            try:
-                y, m, d = match.groups()
-                full_year = 2000 + int(y)  # 예: "18" → 2018
-                dt = datetime(full_year, int(m.zfill(2)), int(d.zfill(2)))
-                if is_valid_date(dt):
-                    return dt
-            except:
-                continue
-
     # fallback
+    print(f"[⚠️ File 이름에서 시간 추정 실패] {filepath}")
     return datetime(2005, 1, 1)
 
 # EXIF 위치 정보 추가
@@ -253,7 +242,7 @@ def process_file(args):
             method = "FILENAME"
 
         if not date_taken:
-            date_taken = parse_date_from_filename(file.name)
+            date_taken = parse_date_from_filename(file)
             method = "FILENAME"
 
         if date_taken:
