@@ -70,21 +70,115 @@ def get_json_taken_date_and_location(filepath):
             continue
     return None, None
 
+# sub function: datetime 변환
+def extract_datetime(value):
+    """날짜 문자열을 datetime 객체로 변환"""
+    try:
+        if "." in value:
+            value = value.split(".")[0]
+        return datetime.strptime(value.strip(), "%Y:%m:%d %H:%M:%S")
+    except:
+        return None
+
+# sub function: GPSDateStamp + GPSTimeStamp 조합
+def extract_gps_datetime(exif):
+    """GPSDateStamp + GPSTimeStamp 조합"""
+    gps_date = exif.get("GPS Date Stamp")
+    gps_time = exif.get("GPS Time Stamp")
+    if gps_date and gps_time:
+        try:
+            h, m, s = map(float, re.findall(r"\d+\.?\d*", gps_time))
+            time_str = f"{int(h):02}:{int(m):02}:{int(s):02}"
+            dt_str = f"{gps_date} {time_str}"
+            return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+        except:
+            return None
+    return None
+
+# EXIFTool을 사용하여 촬영 시간 추정
+def get_best_taken_datetime(filepath):
+    try:
+        result = subprocess.run(
+            ["exiftool", 
+             "-DateTimeOriginal", 
+             "-CreateDate", 
+             "-SubSecDateTimeOriginal",
+             "-DateTimeDigitized",
+             "-ModifyDate",
+             "-GPSDateStamp",
+             "-GPSTimeStamp",
+             filepath],
+            capture_output=True, text=True, check=True
+        )
+        
+        exif = {}
+        for line in result.stdout.splitlines():
+            if ":" in line:
+                key, val = line.split(":", 1)
+                exif[key.strip()] = val.strip()
+
+        source_priority = [
+            ("Date/Time Original", "DateTimeOriginal"),
+            ("Create Date", "CreateDate"),
+            ("Sub Sec Date/Time Original", "SubSecDateTimeOriginal"),
+            ("Date/Time Digitized", "DateTimeDigitized"),
+            ("Modify Date", "ModifyDate")
+        ]
+        
+        for tag_name, source_name in source_priority:
+            if tag_name in exif:
+                dt = extract_datetime(exif[tag_name])
+                if dt:
+                    return dt, source_name
+
+        gps_dt = extract_gps_datetime(exif)
+        if gps_dt:
+            return gps_dt, "GPSDateStamp+GPSTimeStamp"
+        
+    except Exception as e:
+        print(f"[⚠️ EXIFTool 시간 추정 실패] {filepath} → {e}")
+        return None, None
+
 # 파일 이름에서 날짜 추출
 def parse_date_from_filename(name):
-    patterns = [
+    def is_valid_date(dt):
+        return datetime(2005, 1, 1) <= dt <= datetime(2025, 12, 31)
+
+    # 1차: 4자리 연도
+    patterns_4digit = [
         r"(\d{4})[.\-_]?(\d{2})[.\-_]?(\d{2})",
         r"(\d{4})[.\-_]?(\d{1,2})[.\-_]?(\d{1,2})"
     ]
-    for pattern in patterns:
+    for pattern in patterns_4digit:
         match = re.search(pattern, name)
         if match:
             try:
                 y, m, d = match.groups()
-                return datetime(int(y), int(m.zfill(2)), int(d.zfill(2)))
-            except Exception:
+                dt = datetime(int(y), int(m.zfill(2)), int(d.zfill(2)))
+                if is_valid_date(dt):
+                    return dt
+            except:
                 continue
-    return None
+
+    # 2차: 2자리 연도 → 20xx로 간주
+    patterns_2digit = [
+        r"(\d{2})[.\-_]?(\d{2})[.\-_]?(\d{2})",
+        r"(\d{2})[.\-_]?(\d{1,2})[.\-_]?(\d{1,2})"
+    ]
+    for pattern in patterns_2digit:
+        match = re.search(pattern, name)
+        if match:
+            try:
+                y, m, d = match.groups()
+                full_year = 2000 + int(y)  # 예: "18" → 2018
+                dt = datetime(full_year, int(m.zfill(2)), int(d.zfill(2)))
+                if is_valid_date(dt):
+                    return dt
+            except:
+                continue
+
+    # fallback
+    return datetime(2005, 1, 1)
 
 # EXIF 위치 정보 추가
 def append_gps_tags(cmd, lat, lon):
@@ -151,6 +245,11 @@ def process_file(args):
         if not date_taken:
             date_taken, location = get_json_taken_date_and_location(file)
             method = "JSON"
+
+        if not date_taken:
+            date_taken, source_name = get_best_taken_datetime(file)
+            #method = "EXIFTool"
+            method = "FILENAME"
 
         if not date_taken:
             date_taken = parse_date_from_filename(file.name)
