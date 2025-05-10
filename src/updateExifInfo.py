@@ -14,8 +14,8 @@ from multiprocessing import Pool, cpu_count, Manager
 import glob
 
 # 설정
-ROOT_DIR = Path(r"G:\Download\Takeout\work2\src")       # 원본 폴더
-DEST_DIR = Path(r"G:\Download\Takeout\work2\dest")  # 이동 대상 폴더
+ROOT_DIR = Path(r"G:\Download\Takeout\work\src")       # 원본 폴더
+DEST_DIR = Path(r"G:\Download\Takeout\work\dest")  # 이동 대상 폴더
 CHECK_DIR = DEST_DIR / "check"
 UNDEFINED_DIR = DEST_DIR / "undefined"
 LOG_SUCCESS = ROOT_DIR / "success_log.txt"
@@ -42,12 +42,16 @@ def get_exif_taken_date(filepath):
 def get_json_taken_date_and_location(filepath):
     pattern = str(filepath) + ".*.json"
     matches = glob.glob(pattern)
+    preferred_keys = [
+        "photoTakenTime", "creationTime", "mediaCreateTime", "trackCreateTime",
+        "takenTimestamp", "dateAcquired", "modificationTime"
+    ]
     for json_file in matches:
         try:
             with open(json_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 date_obj = None
-                for key in ["photoTakenTime", "creationTime", "mediaCreateTime", "trackCreateTime"]:
+                for key in preferred_keys:
                     if key in data:
                         timestamp = int(data[key]["timestamp"])
                         date_obj = datetime.utcfromtimestamp(timestamp)
@@ -115,10 +119,10 @@ def update_exiftool_taken_date(filepath, date_obj, location=None):
         img = Image.open(filepath)
         img.save(filepath)
         subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(f"[⚠️ 재저장 후 AllDates + 위치 성공] {filepath}")
+        # print(f"[⚠️ 재저장 후 AllDates + 위치 성공] {filepath}")
         return
     except Exception as e:
-        print(f"[⚠️ 재저장 실패] {filepath} → {e}")
+        print(f"[⚠️ 재저장 후 AllDates + 위치 실패] {filepath} → {e}")
 
     fallback_cmd = ["exiftool", f"-DateTimeOriginal={date_str}"]
     if location:
@@ -172,7 +176,7 @@ def process_file(args):
 # 메인 실행
 def run_parallel_processing():
     all_files = [p for p in ROOT_DIR.rglob("*") if p.suffix.lower() in EXTENSIONS]
-    num_workers = max(1, cpu_count() * 3 // 4)
+    num_workers = max(1, cpu_count() * 9 // 10)
 
     with Manager() as manager:
         queue = manager.Queue()
